@@ -67,7 +67,7 @@ EXCLUSIONS = {
                 'AudienceImpressionSharePercent',
                 'RelativeCtr'
             ]
-        },{
+        }, {
             'Attributes': [
                 'BidMatchType',
                 'DeviceOS',
@@ -112,7 +112,7 @@ EXCLUSIONS = {
                 'AudienceImpressionSharePercent',
                 'RelativeCtr'
             ]
-        },{
+        }, {
             'Attributes': [
                 'BidMatchType',
                 'BudgetAssociationStatus',
@@ -202,5 +202,9 @@ EXCLUSIONS = {
             'ImpressionLostToRankPercent',
             'ImpressionSharePercent'
         ]
+    }],
+    'UserLocationPerformanceReport': [{
+        'Attributes': [],
+        'ImpressionSharePerformanceStatistics': []
     }]
 }
