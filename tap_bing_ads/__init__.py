@@ -960,6 +960,8 @@ async def sync_report_interval(client, account_id, report_stream,
             singer.write_state(STATE)
         else:
             LOGGER.info('Skipping state update due to skip_state_update=true')
+            # Write the original state to preserve existing bookmarks
+            singer.write_state(STATE)
         return True
     elif success and not download_url:
         LOGGER.info('No data for report: %s for account %s - from %s to %s',
@@ -1099,6 +1101,7 @@ async def main_impl():
 
     CONFIG.update(args.config)
     STATE.update(args.state)
+    skip_state_update = CONFIG.get('skip_state_update', False)
     account_ids = CONFIG['account_ids'].split(",")
 
     if args.discover: # Discover mode
@@ -1106,6 +1109,12 @@ async def main_impl():
         LOGGER.info("Discovery complete")
     elif args.catalog: # Sync mode
         await do_sync_all_accounts(account_ids, args.catalog)
+        
+        # Preserve original state during backfill
+        if skip_state_update:
+            LOGGER.info('Backfill completed, preserving original state')
+            singer.write_state(args.state)  # Write the original state
+        
         LOGGER.info("Sync Completed")
     else:
         LOGGER.info("No catalog was provided")
