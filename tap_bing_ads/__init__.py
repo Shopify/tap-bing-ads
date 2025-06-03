@@ -865,7 +865,6 @@ def get_report_interval(state_key):
 
     start_date = min(start_date, conversion_min_date) # minimum of start_date or conversion_min_date
 
-    # Handle end_date logic  
     if force_report_end_date:
         LOGGER.info('Using force_report_end_date from config: %s', force_report_end_date)
         end_date = arrow.get(force_report_end_date).floor('day')
@@ -920,7 +919,6 @@ async def sync_report_interval(client, account_id, report_stream,
                                        report_name, start_date, end_date,
                                        state_key)
 
-    # PROTECT: Initial request_id write
     if not skip_state_update:
         singer.write_bookmark(STATE, state_key, 'request_id', request_id)
         singer.write_state(STATE)
@@ -940,7 +938,6 @@ async def sync_report_interval(client, account_id, report_stream,
                                            report_name, start_date, end_date,
                                            state_key, force_refresh=True)
 
-        # PROTECT: Retry request_id write
         if not skip_state_update:
             singer.write_bookmark(STATE, state_key, 'request_id', request_id)
             singer.write_state(STATE)
