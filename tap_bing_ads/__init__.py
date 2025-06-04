@@ -842,7 +842,11 @@ def get_report_interval(state_key):
     # Return start_date and end_date for report interval
     report_max_days = int(CONFIG.get('report_max_days', 30)) # pylint: disable=unused-variable
     conversion_window = int(CONFIG.get('conversion_window', -30))
-
+    
+    # Report-specific date overrides for backfilling
+    force_report_start_date = CONFIG.get('force_report_start_date')
+    force_report_end_date = CONFIG.get('force_report_end_date')
+    
     config_start_date = arrow.get(CONFIG.get('start_date'))
     config_end_date = arrow.get(CONFIG.get('end_date')).floor('day')
 
@@ -850,7 +854,10 @@ def get_report_interval(state_key):
     conversion_min_date = arrow.get().floor('day').shift(days=conversion_window) # 30 days before the current date
 
     start_date = None
-    if bookmark_end_date:
+    if force_report_start_date:
+        LOGGER.info('Using force_report_start_date from config: %s (ignoring bookmarks)', force_report_start_date)
+        start_date = arrow.get(force_report_start_date).floor('day')
+    elif bookmark_end_date:
         start_date = arrow.get(bookmark_end_date).floor('day').shift(days=1)
     else:
         # Will default to today
@@ -858,7 +865,11 @@ def get_report_interval(state_key):
 
     start_date = min(start_date, conversion_min_date) # minimum of start_date or conversion_min_date
 
-    end_date = min(config_end_date, arrow.get().floor('day')) # minimum of end_date or current date
+    if force_report_end_date:
+        LOGGER.info('Using force_report_end_date from config: %s', force_report_end_date)
+        end_date = arrow.get(force_report_end_date).floor('day')
+    else:
+        end_date = min(config_end_date, arrow.get().floor('day')) # minimum of end_date or current date
 
     return start_date, end_date
 
@@ -895,6 +906,7 @@ async def sync_report(client, account_id, report_stream):
 async def sync_report_interval(client, account_id, report_stream,
                                start_date, end_date):
     state_key = '{}_{}'.format(account_id, report_stream.stream)
+    skip_state_update = CONFIG.get('skip_state_update', False)
     report_name = stringcase.pascalcase(report_stream.stream)
 
     report_schema = get_report_schema(client, report_name)
@@ -907,8 +919,11 @@ async def sync_report_interval(client, account_id, report_stream,
                                        report_name, start_date, end_date,
                                        state_key)
 
-    singer.write_bookmark(STATE, state_key, 'request_id', request_id)
-    singer.write_state(STATE)
+    if not skip_state_update:
+        singer.write_bookmark(STATE, state_key, 'request_id', request_id)
+        singer.write_state(STATE)
+    else:
+        LOGGER.info('Skipping initial state update due to skip_state_update=true')
 
     try:
         # Get success status and download url
@@ -923,36 +938,49 @@ async def sync_report_interval(client, account_id, report_stream,
                                            report_name, start_date, end_date,
                                            state_key, force_refresh=True)
 
-        singer.write_bookmark(STATE, state_key, 'request_id', request_id)
-        singer.write_state(STATE)
+        if not skip_state_update:
+            singer.write_bookmark(STATE, state_key, 'request_id', request_id)
+            singer.write_state(STATE)
+        else:
+            LOGGER.info('Skipping retry state update due to skip_state_update=true')
 
         success, download_url = await poll_report(client, account_id, report_name,
                                                   start_date, end_date, request_id)
 
-    if success and download_url: # pylint: disable=no-else-return
+    if success and download_url:
         LOGGER.info('Streaming report: %s for account %s - from %s to %s',
                     report_name, account_id, start_date, end_date)
-
-        stream_report(report_stream.stream,
-                      report_name,
-                      download_url,
-                      report_time)
-        singer.write_bookmark(STATE, state_key, 'request_id', None)
-        singer.write_bookmark(STATE, state_key, 'date', end_date.isoformat())
-        singer.write_state(STATE)
+        
+        stream_report(report_stream.stream, report_name, download_url, report_time)
+        
+        # Only update state if not in backfill mode
+        if not skip_state_update:
+            singer.write_bookmark(STATE, state_key, 'request_id', None)
+            singer.write_bookmark(STATE, state_key, 'date', end_date.isoformat())
+            singer.write_state(STATE)
+        else:
+            LOGGER.info('Skipping state update due to skip_state_update=true')
+            # Write the original state to preserve existing bookmarks
+            singer.write_state(STATE)
         return True
     elif success and not download_url:
         LOGGER.info('No data for report: %s for account %s - from %s to %s',
                     report_name, account_id, start_date, end_date)
-        singer.write_bookmark(STATE, state_key, 'request_id', None)
-        singer.write_bookmark(STATE, state_key, 'date', end_date.isoformat())
-        singer.write_state(STATE)
+        if not skip_state_update:
+            singer.write_bookmark(STATE, state_key, 'request_id', None)
+            singer.write_bookmark(STATE, state_key, 'date', end_date.isoformat())
+            singer.write_state(STATE)
+        else:
+            LOGGER.info('Skipping state update due to skip_state_update=true')
         return True
     else:
         LOGGER.info('Unsuccessful request for report: %s for account %s - from %s to %s',
                     report_name, account_id, start_date, end_date)
-        singer.write_bookmark(STATE, state_key, 'request_id', None)
-        singer.write_state(STATE)
+        if not skip_state_update:
+            singer.write_bookmark(STATE, state_key, 'request_id', None)
+            singer.write_state(STATE)
+        else:
+            LOGGER.info('Skipping state update due to skip_state_update=true')
         return False
 
 
@@ -1073,6 +1101,7 @@ async def main_impl():
 
     CONFIG.update(args.config)
     STATE.update(args.state)
+    skip_state_update = CONFIG.get('skip_state_update', False)
     account_ids = CONFIG['account_ids'].split(",")
 
     if args.discover: # Discover mode
@@ -1080,6 +1109,12 @@ async def main_impl():
         LOGGER.info("Discovery complete")
     elif args.catalog: # Sync mode
         await do_sync_all_accounts(account_ids, args.catalog)
+        
+        # Preserve original state during backfill
+        if skip_state_update:
+            LOGGER.info('Backfill completed, preserving original state')
+            singer.write_state(args.state)  # Write the original state
+        
         LOGGER.info("Sync Completed")
     else:
         LOGGER.info("No catalog was provided")
